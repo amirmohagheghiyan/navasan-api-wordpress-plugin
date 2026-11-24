@@ -1,0 +1,27 @@
+# Dependencies and caches
+/vendor/
+composer.lock
+.phpunit.cache/
+.phpunit.result.cache
+node_modules/
+
+# Secrets and environment files
+.env
+.env.*
+*.key
+*.pem
+auth.json
+.claude/
+
+# Local test sites and build output
+/.wp-playground/
+/.wp-test/
+/dist/
+*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

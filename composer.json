@@ -1,0 +1,19 @@
+{
+	"name": "one28/navasan-api-wordpress-plugin",
+	"description": "Navasan-API plugin for WordPress (development tooling only; the plugin has no runtime dependencies).",
+	"type": "wordpress-plugin",
+	"license": "GPL-2.0-or-later",
+	"require": {
+		"php": ">=7.4"
+	},
+	"require-dev": {
+		"phpunit/phpunit": "^11 || ^12"
+	},
+	"config": {
+		"sort-packages": true
+	},
+	"scripts": {
+		"test": "phpunit --testsuite unit",
+		"test:live": "phpunit --testsuite live"
+	}
+}
