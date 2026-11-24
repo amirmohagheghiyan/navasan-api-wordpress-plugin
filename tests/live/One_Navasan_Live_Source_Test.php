@@ -32,7 +32,7 @@ class One_Navasan_Live_Source_Test extends TestCase {
 		);
 		$body = @file_get_contents( $url, false, $ctx );
 		// PHP 8.5 deprecates the magic $http_response_header variable.
-		$headers = function_exists( 'http_get_last_response_headers' ) ? http_get_last_response_headers() : ( isset( $http_response_header ) ? $http_response_header : null );
+		$headers = function_exists( 'http_get_last_response_headers' ) ? http_get_last_response_headers() : ( isset( ${'http_response_header'} ) ? ${'http_response_header'} : null );
 		if ( false === $body || empty( $headers[0] ) || false === strpos( $headers[0], '200' ) ) {
 			return null;
 		}
