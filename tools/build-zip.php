@@ -22,6 +22,7 @@ $include = array(
 	$slug . '.php',
 	'uninstall.php',
 	'README.md',
+	'CHANGELOG.md',
 	'LICENSE',
 	'NOTICE',
 	'includes',
