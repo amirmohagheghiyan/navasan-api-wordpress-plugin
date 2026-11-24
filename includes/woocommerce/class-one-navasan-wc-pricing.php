@@ -527,6 +527,13 @@ class One_Navasan_WC_Pricing {
 			return;
 		}
 		set_transient( self::LOCK, 1, 120 );
+		// Settings or rate changed while the job was running: start over with the new inputs.
+		$current_hash = self::pricing_hash();
+		if ( $current_hash !== $job['hash'] ) {
+			$job['hash']   = $current_hash;
+			$job['cursor'] = 0;
+			$job['counts'] = array( 'products' => 0, 'items' => 0, 'updated' => 0, 'unchanged' => 0, 'skipped' => array(), 'examples' => array() );
+		}
 		$chunk = self::process_chunk( 'apply', (int) $job['cursor'] );
 		if ( is_wp_error( $chunk ) ) {
 			$job['status'] = 'failed';
