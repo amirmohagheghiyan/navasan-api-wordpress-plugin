@@ -1,0 +1,56 @@
+Navasan-API plugin for WordPress
+Copyright (C) one28
+Licensed under GPL-2.0-or-later (see LICENSE).
+
+DATA SOURCE / CREDIT
+--------------------
+This plugin gets its rates from the open-source project Navasan-API:
+
+    Project : Navasan-API
+    Author  : Hossein (GitHub: HosseinOdd)
+    URL     : https://github.com/HosseinOdd/Navasan-API
+    License : "Attribution License" (a permissive MIT-style license that requires
+              the copyright notice and attribution to the original author with a
+              link to the original repository). GitHub lists it as "Other".
+              Copyright (c) 2025 Hossein.
+
+The plugin only READS the JSON files published in that repository at runtime
+(data/gold.json). No source code, data file or other asset from Navasan-API is
+copied into this plugin or distributed with it. Attribution is nevertheless given
+in the README, in the plugin header and on the plugin settings page.
+
+The upstream project in turn collects its data from https://www.navasan.net. The
+data is provided without any warranty. The site administrator is responsible for
+the correctness of the prices shown and for respecting the terms of use of the
+original data source.
+
+Upstream license text (as published in the Navasan-API repository):
+
+    Attribution License
+
+    Copyright (c) 2025 Hossein
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to use,
+    copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+    the Software, subject to the following conditions:
+
+    1. Copyright Notice: The above copyright notice and this license must be
+       included in all copies or substantial portions of the Software.
+
+    2. Attribution: Any redistribution of the Software, including forks and
+       derivative works, must retain clear attribution to Hossein as the original
+       author and include a link to the original project repository. This
+       attribution must appear in the README file, documentation, or project page
+       accompanying the redistributed Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+(The upstream text has a placeholder "ORIGINAL_REPOSITORY_URL"; the repository
+is https://github.com/HosseinOdd/Navasan-API.)

@@ -1,14 +1,14 @@
 <#
   Runs the integration scenario on a real WordPress (WordPress Playground CLI, WASM, no Docker).
 
-  Usage:  powershell -File tests/integration/run-integration.ps1 [-Modes irt,irr,nowc]
+  Usage:  powershell -File tests/integration/run-integration.ps1 [-Modes irt,irr,nowc] [-Php 7.4]
 
   Modes:
     irt   WooCommerce with IRT currency
     irr   WooCommerce with IRR currency
     nowc  WordPress without WooCommerce
 #>
-param([string[]]$Modes = @('nowc', 'irt', 'irr'))
+param([string[]]$Modes = @('nowc', 'irt', 'irr'), [string]$Php = '8.3')
 $Modes = $Modes | ForEach-Object { $_ -split ',' }
 
 $ErrorActionPreference = 'Continue'
@@ -29,7 +29,7 @@ foreach ($mode in $Modes) {
     }
     $code = "<?php require '/wordpress/wp-content/plugins/navasan-api-wordpress-plugin/tests/integration/one-navasan-scenario.php';"
     $steps += @{ step = 'runPHP'; code = $code }
-    $bp = @{ preferredVersions = @{ php = '8.3'; wp = 'latest' }; steps = $steps } | ConvertTo-Json -Depth 8
+    $bp = @{ preferredVersions = @{ php = $Php; wp = 'latest' }; steps = $steps } | ConvertTo-Json -Depth 8
     $bpFile = Join-Path $work "blueprint-$mode.json"
     [IO.File]::WriteAllText($bpFile, $bp)
 
