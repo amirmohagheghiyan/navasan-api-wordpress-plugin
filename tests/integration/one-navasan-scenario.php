@@ -41,31 +41,8 @@ function one_near( $a, $b, $eps = 0.01 ) {
 	return abs( (float) $a - (float) $b ) <= $eps;
 }
 
-// ---- Mock the source (deterministic) -------------------------------------
-$GLOBALS['one_fixture'] = array( 'value' => 25035780, 'date' => time() - 600, 'fail' => false, 'raw' => null );
-add_filter(
-	'pre_http_request',
-	function ( $pre, $args, $url ) {
-		if ( false === strpos( $url, 'Navasan-API' ) ) {
-			return $pre;
-		}
-		$f = $GLOBALS['one_fixture'];
-		if ( $f['fail'] ) {
-			return new WP_Error( 'http_request_failed', 'simulated failure' );
-		}
-		$body = null !== $f['raw'] ? $f['raw'] : wp_json_encode(
-			array(
-				'18ayar'       => array( 'change_val' => 0, 'change_pct' => 0, 'value' => $f['value'], 'date' => $f['date'] ),
-				'sekkeh'       => array( 'change_val' => 0, 'change_pct' => 0, 'value' => 257500000, 'date' => $f['date'] ),
-				'usd_xau'      => array( 'change_val' => 0, 'change_pct' => 0, 'value' => '3630.66', 'date' => $f['date'] ),
-				'bub_abshodeh' => array( 'change_val' => 0, 'change_pct' => 0, 'date' => $f['date'] ),
-			)
-		);
-		return array( 'headers' => array(), 'body' => $body, 'response' => array( 'code' => 200, 'message' => 'OK' ), 'cookies' => array(), 'filename' => null );
-	},
-	10,
-	3
-);
+// ---- Mock both sources (deterministic) ------------------------------------
+require __DIR__ . '/one-navasan-mock.php';
 
 echo "== MODE: $one_mode ==\n";
 $has_wc = class_exists( 'WooCommerce' );
@@ -92,7 +69,14 @@ function one_set( array $changes ) {
 	$new = One_Navasan_Settings::sanitize( array_merge( One_Navasan_Settings::all(), $changes, array( 'scope' => 'all' ) ) );
 	update_option( One_Navasan_Settings::OPTION, $new );
 }
-one_set( array( 'profit_pct' => 7, 'tax_pct' => 9, 'wage_pct' => 10, 'round_step' => 1000, 'round_dir' => 'nearest', 'max_jump_pct' => 10, 'stale_hours' => 6 ) );
+$fresh = One_Navasan_Settings::all();
+one_t( 'fresh install defaults: priceto primary, Navasan-API backup', 'priceto' === $fresh['rate_source'] && 'navasan' === $fresh['backup_source'], wp_json_encode( array( $fresh['rate_source'], $fresh['backup_source'] ) ) );
+one_t( 'fresh install base symbols per source', 'gold-18k' === $fresh['base_symbol_priceto'] && '18ayar' === $fresh['base_symbol'] );
+one_t( 'fresh install: version stored, no upgrade notice', One_Navasan_Upgrade::TARGET === get_option( One_Navasan_Upgrade::VERSION_OPTION ) && ! get_option( One_Navasan_Upgrade::NOTICE_OPTION ) );
+one_t( 'no legacy rate_mode key', ! array_key_exists( 'rate_mode', $fresh ) );
+
+// Everything below the sources section runs on the Navasan-API source (as in 1.0.0); the sources section tests the rest.
+one_set( array( 'rate_source' => 'navasan', 'backup_source' => 'none', 'profit_pct' => 7, 'tax_pct' => 9, 'wage_pct' => 10, 'round_step' => 1000, 'round_dir' => 'nearest', 'max_jump_pct' => 10, 'stale_hours' => 6 ) );
 
 // ---- 2. Fetch ---------------------------------------------------------------
 $r = One_Navasan_Rate_Service::refresh();
@@ -141,12 +125,218 @@ one_set( array( 'max_jump_pct' => 0 ) ); // Allow the way back.
 One_Navasan_Rate_Service::refresh();
 one_set( array( 'max_jump_pct' => 10 ) );
 one_t( 'rate restored', one_near( One_Navasan_Rate_Service::effective_toman(), 25035780 ) );
-$GLOBALS['one_fixture']['date'] = time() - 8 * 3600;
+// Staleness only counts market-open hours (Tehran time), so it is judged at fixed moments: 2026-11-24 is a Tuesday.
+$tehran = function ( $day, $hour, $minute = 0 ) {
+	return gmmktime( $hour, $minute, 0, 11, $day, 2026 ) - 12600;
+};
+$GLOBALS['one_fixture']['date'] = $tehran( 24, 8 );
 One_Navasan_Rate_Service::refresh();
-one_t( 'stale data flagged, rate kept', One_Navasan_Rate_Service::is_stale() && one_near( One_Navasan_Rate_Service::effective_toman(), 25035780 ) );
+one_t( 'stale data flagged after 8 open hours, rate kept', One_Navasan_Rate_Service::is_stale( $tehran( 24, 16 ) ) && one_near( One_Navasan_Rate_Service::effective_toman(), 25035780 ) );
+one_t( 'not stale after 2 open hours', ! One_Navasan_Rate_Service::is_stale( $tehran( 24, 10 ) ) );
+$GLOBALS['one_fixture']['date'] = $tehran( 26, 13 ); // Thursday 13:00.
+One_Navasan_Rate_Service::refresh();
+one_t( 'Friday and Saturday morning do not raise the stale warning', ! One_Navasan_Rate_Service::is_stale( $tehran( 27, 20 ) ) && ! One_Navasan_Rate_Service::is_stale( $tehran( 28, 12 ) ) );
+one_t( 'but a silent Saturday afternoon does', One_Navasan_Rate_Service::is_stale( $tehran( 28, 15 ) ) );
 $GLOBALS['one_fixture']['date'] = time() - 600;
 One_Navasan_Rate_Service::refresh();
 one_t( 'fresh data not stale', ! One_Navasan_Rate_Service::is_stale() );
+
+// ---- 4b. Sources: priceto.day, backup rule, cooldown, source change, manual -----------------
+$cd_key = function ( $url ) {
+	return 'one_navasan_cd_' . md5( $url );
+};
+$reqs_to = function ( $needle ) {
+	return count( array_filter( $GLOBALS['one_requests'], function ( $r ) use ( $needle ) {
+		return false !== strpos( $r['url'], $needle );
+	} ) );
+};
+// A. priceto.day as primary, Navasan-API as backup.
+wp_clear_scheduled_hook( One_Navasan_Scheduler::NOW_HOOK );
+one_set( array( 'rate_source' => 'priceto', 'backup_source' => 'navasan' ) );
+one_t( 'changing the source schedules an immediate refresh', (bool) wp_next_scheduled( One_Navasan_Scheduler::NOW_HOOK ) );
+$GLOBALS['one_requests']            = array();
+$GLOBALS['one_fixture_priceto']['date'] = time() - 300;
+$r = One_Navasan_Rate_Service::refresh();
+one_t( 'priceto: refresh ok', $r['ok'], wp_json_encode( $r ) );
+one_t( 'priceto: Rial converted to Toman', one_near( One_Navasan_Rate_Service::effective_toman(), 25670800 ), (string) One_Navasan_Rate_Service::effective_toman() );
+$src = One_Navasan_Rate_Service::current_source();
+one_t( 'priceto: current source recorded', 'priceto' === $src['id'] && ! $src['via_backup'] );
+one_t( 'priceto: only two requests (latest + change)', 2 === count( $GLOBALS['one_requests'] ) && 1 === $reqs_to( '/v1/latest/irr/gold-18k' ) && 1 === $reqs_to( '/v1/change/irr/gold-18k' ), wp_json_encode( $GLOBALS['one_requests'] ) );
+one_t( 'priceto: Navasan-API not contacted while the primary works', 0 === $reqs_to( 'Navasan-API' ) );
+$o = One_Navasan_Rate_Service::symbol_output();
+one_t( 'priceto: high and low come from the source', one_near( $o['high'], 25821600 ) && one_near( $o['low'], 24088100 ), wp_json_encode( array( $o['high'], $o['low'] ) ) );
+$rial = 256708000;
+one_t( 'priceto: day change from /change in Toman', one_near( $o['change_val'], (int) round( $rial - $rial / 1.0972 ) / 10, 0.5 ) && one_near( $o['change_pct'], 9.7236, 0.0001 ), wp_json_encode( array( $o['change_val'], $o['change_pct'] ) ) );
+one_t( 'priceto: output source field', 'priceto' === $o['source'] );
+$d = rest_do_request( new WP_REST_Request( 'GET', '/one-navasan/v1/rate' ) )->get_data();
+one_t( 'priceto: REST keeps its shape and adds source', 'priceto' === $d['source'] && one_near( $d['value'], 25670800 ) && isset( $d['high'], $d['low'], $d['change_val'], $d['change_pct'], $d['updated'], $d['stale'], $d['mode'] ) );
+one_t( 'priceto: shortcode default', false !== strpos( do_shortcode( '[one_gold_price digits="en" label="no"]' ), '25,670,800' ) );
+one_t( 'priceto: shortcode high field from the source', false !== strpos( do_shortcode( '[one_gold_price field="high" digits="en" label="no"]' ), '25,821,600' ) );
+one_t( 'priceto: shortcode with the Navasan base symbol (18ayar) still works', false !== strpos( do_shortcode( '[one_gold_price symbol="18ayar" digits="en" label="no"]' ), '25,670,800' ) );
+one_t( 'priceto: shortcode with its own symbol works', false !== strpos( do_shortcode( '[one_gold_price symbol="gold-18k" digits="en" label="no"]' ), '25,670,800' ) );
+one_t( 'priceto: unknown symbol is a dash', false !== strpos( do_shortcode( '[one_gold_price symbol="usd_xau"]' ), '—' ) );
+
+// Day change can be switched off (one request only).
+one_set( array( 'priceto_fetch_change' => 0 ) );
+$GLOBALS['one_requests'] = array();
+One_Navasan_Rate_Service::refresh();
+$o = One_Navasan_Rate_Service::symbol_output();
+one_t( 'priceto: change request skipped when switched off', 1 === count( $GLOBALS['one_requests'] ) && null === $o['change_val'] && null === $o['change_pct'] );
+one_set( array( 'priceto_fetch_change' => 1 ) );
+
+// The change request must never fail the fetch, and its failure puts it on cooldown.
+$GLOBALS['one_fixture_priceto']['fail_change'] = true;
+$GLOBALS['one_requests'] = array();
+$r = One_Navasan_Rate_Service::refresh();
+one_t( 'priceto: failing change request does not fail the refresh', $r['ok'] && one_near( One_Navasan_Rate_Service::effective_toman(), 25670800 ) );
+$GLOBALS['one_requests'] = array();
+One_Navasan_Rate_Service::refresh();
+one_t( 'priceto: failed change path is skipped on the next refresh', 0 === $reqs_to( '/v1/change/' ) && 1 === $reqs_to( '/v1/latest/' ) );
+$GLOBALS['one_fixture_priceto']['fail_change'] = false;
+delete_transient( $cd_key( 'https://api.priceto.day/v1/change/irr/gold-18k' ) );
+
+// B. Primary down: an older backup is refused, a newer one is used.
+$GLOBALS['one_fixture_priceto']['fail'] = true;
+$GLOBALS['one_fixture']['date']  = time() - 3 * 3600;
+$GLOBALS['one_fixture']['value'] = 24000000;
+$GLOBALS['one_requests'] = array();
+$r = One_Navasan_Rate_Service::refresh();
+one_t( 'backup older than the stored rate is refused, rate kept', ! $r['ok'] && 'failed' === $r['status'] && one_near( One_Navasan_Rate_Service::effective_toman(), 25670800 ) );
+one_t( 'refusal reason recorded', false !== strpos( (string) get_option( One_Navasan_Rate_Service::ERROR ), 'backup_not_newer' ), (string) get_option( One_Navasan_Rate_Service::ERROR ) );
+one_t( 'single-path primary is tried even right after a failure', $reqs_to( '/v1/latest/' ) >= 1 );
+$GLOBALS['one_fixture']['date']  = time() - 60;
+$GLOBALS['one_fixture']['value'] = 25100000;
+$r = One_Navasan_Rate_Service::refresh();
+$src = One_Navasan_Rate_Service::current_source();
+one_t( 'newer backup is used', $r['ok'] && one_near( One_Navasan_Rate_Service::effective_toman(), 25100000 ) && 'navasan' === $src['id'] && $src['via_backup'], wp_json_encode( array( $r, $src ) ) );
+$o = One_Navasan_Rate_Service::symbol_output();
+one_t( 'backup rate has high/low from the plugin-tracked range', null !== $o['high'] && $o['high'] >= $o['low'] && 'navasan' === $o['source'] );
+wp_set_current_user( 1 );
+ob_start();
+One_Navasan_Admin::render();
+$html = ob_get_clean();
+one_t( 'status page flags the backup source with a warning', false !== strpos( $html, 'one-warn' ) );
+// C. Primary recovers.
+$GLOBALS['one_fixture_priceto']['fail'] = false;
+$GLOBALS['one_fixture_priceto']['date'] = time() - 30;
+$r   = One_Navasan_Rate_Service::refresh();
+$src = One_Navasan_Rate_Service::current_source();
+one_t( 'primary recovers and replaces the backup rate', $r['ok'] && 'priceto' === $src['id'] && ! $src['via_backup'] && one_near( One_Navasan_Rate_Service::effective_toman(), 25670800 ) );
+
+// D. Navasan-API: a timing-out path is put on cooldown and skipped afterwards.
+one_set( array( 'rate_source' => 'navasan', 'backup_source' => 'none' ) );
+$GLOBALS['one_fixture']['value'] = 25035780;
+$GLOBALS['one_fixture']['date']  = time() - 600;
+$GLOBALS['one_fixture']['fail_hosts'] = array( 'raw.githubusercontent.com' );
+delete_transient( $cd_key( One_Navasan_Settings::DEFAULT_URL ) );
+$GLOBALS['one_requests'] = array();
+$r = One_Navasan_Rate_Service::refresh();
+one_t( 'Navasan raw path times out: falls back to the next path', $r['ok'] && 'contents_api' === One_Navasan_Rate_Service::state()['source'], wp_json_encode( array( $r, One_Navasan_Rate_Service::state()['source'] ) ) );
+one_t( 'timed-out path is on cooldown', false !== get_transient( $cd_key( One_Navasan_Settings::DEFAULT_URL ) ) );
+$GLOBALS['one_requests'] = array();
+One_Navasan_Rate_Service::refresh();
+one_t( 'cooling-down path is not requested again', 0 === $reqs_to( 'raw.githubusercontent.com' ) && 1 === count( $GLOBALS['one_requests'] ), wp_json_encode( $GLOBALS['one_requests'] ) );
+$GLOBALS['one_requests'] = array();
+$rows = One_Navasan_Fetcher::test_all();
+one_t( 'test connection ignores the cooldown', $reqs_to( 'raw.githubusercontent.com' ) >= 1 );
+$GLOBALS['one_fixture']['fail_hosts'] = array();
+delete_transient( $cd_key( One_Navasan_Settings::DEFAULT_URL ) );
+
+// E. Test connection: both providers, separate rows, values in Toman.
+$GLOBALS['one_fixture_priceto']['value'] = 25670800;
+$rows = One_Navasan_Fetcher::test_all();
+$by   = array();
+foreach ( $rows as $row ) {
+	$by[ $row['provider'] ][] = $row;
+}
+one_t( 'test connection: one priceto path and three Navasan paths', 1 === count( $by['priceto.day'] ) && 3 === count( $by['Navasan-API'] ), wp_json_encode( array_map( 'count', $by ) ) );
+one_t( 'test connection: priceto row shows the Toman rate and data time', $by['priceto.day'][0]['ok'] && one_near( $by['priceto.day'][0]['value'], 25670800 ) && ! empty( $by['priceto.day'][0]['date'] ) );
+$nav_ok = true;
+foreach ( $by['Navasan-API'] as $row ) {
+	$nav_ok = $nav_ok && $row['ok'] && one_near( $row['value'], 25035780 ) && ! empty( $row['date'] ) && '' !== $row['url'];
+}
+one_t( 'test connection: every Navasan path shows the Toman rate and data time', $nav_ok );
+
+// F. Switching source holds a jump (reason source_change); same-source jumps hold with reason jump.
+one_set( array( 'rate_source' => 'priceto', 'backup_source' => 'none', 'max_jump_pct' => 10 ) );
+$GLOBALS['one_fixture_priceto']['value'] = 28000000; // +11.8% against the stored Navasan-API rate.
+$GLOBALS['one_fixture_priceto']['date']  = time() - 100;
+$r = One_Navasan_Rate_Service::refresh();
+$p = One_Navasan_Rate_Service::pending();
+one_t( 'source switch jump is held for approval', 'pending' === $r['status'] && one_near( One_Navasan_Rate_Service::effective_toman(), 25035780 ) && null !== $p );
+one_t( 'hold reason is the source change, from priceto', $p && 'source_change' === $p['reason'] && 'priceto' === $p['provider'] );
+ob_start();
+One_Navasan_Admin::notices();
+$notice = ob_get_clean();
+one_t( 'admin notice names the source change', false !== strpos( $notice, 'priceto.day' ) && false !== strpos( $notice, 'منبع نرخ تغییر کرده' ), $notice );
+one_t( 'approving applies the new source rate', One_Navasan_Rate_Service::approve_pending() && one_near( One_Navasan_Rate_Service::effective_toman(), 28000000 ) && 'priceto' === One_Navasan_Rate_Service::current_source()['id'] );
+$GLOBALS['one_fixture_priceto']['value'] = 20000000; // -28.6% on the same source.
+$r = One_Navasan_Rate_Service::refresh();
+$p = One_Navasan_Rate_Service::pending();
+one_t( 'same-source jump is held with reason jump', 'pending' === $r['status'] && $p && 'jump' === $p['reason'] );
+one_set( array( 'max_jump_pct' => 0 ) );
+$GLOBALS['one_fixture_priceto']['value'] = 25670800;
+One_Navasan_Rate_Service::refresh();
+one_set( array( 'max_jump_pct' => 10 ) );
+one_t( 'pending cleared after a healthy commit', null === One_Navasan_Rate_Service::pending() && one_near( One_Navasan_Rate_Service::effective_toman(), 25670800 ) );
+
+// G. Manual source: no fetching at all.
+$manual_toman = 30000000;
+one_set( array( 'rate_source' => 'manual', 'backup_source' => 'navasan', 'manual_rate' => (string) ( $manual_toman * $mult ) ) );
+$GLOBALS['one_requests'] = array();
+$r = One_Navasan_Rate_Service::refresh();
+One_Navasan_Scheduler::run();
+one_t( 'manual: refresh and the scheduler make no request', 'manual' === $r['status'] && ! $r['ok'] && 0 === count( $GLOBALS['one_requests'] ) );
+$o = One_Navasan_Rate_Service::symbol_output();
+one_t( 'manual: rate, source and mode', one_near( One_Navasan_Rate_Service::effective_toman(), $manual_toman ) && 'manual' === $o['source'] && 'manual' === $o['mode'] && 'manual' === One_Navasan_Rate_Service::current_source()['id'] );
+one_t( 'manual: never stale', ! One_Navasan_Rate_Service::is_stale( $tehran( 28, 23 ) ) );
+one_t( 'manual: shortcodes for both base symbols work', false !== strpos( do_shortcode( '[one_gold_price symbol="gold-18k" digits="en" label="no"]' ), '30,000,000' ) && false !== strpos( do_shortcode( '[one_gold_price symbol="18ayar" digits="en" label="no"]' ), '30,000,000' ) );
+
+// H. Settings sanitizing and the dashboard page.
+$s = One_Navasan_Settings::sanitize( array_merge( One_Navasan_Settings::all(), array( 'rate_source' => 'navasan', 'backup_source' => 'navasan' ) ) );
+one_t( 'a source cannot back itself up', 'none' === $s['backup_source'] );
+$s = One_Navasan_Settings::sanitize( array_merge( One_Navasan_Settings::all(), array( 'base_symbol_priceto' => 'Gold 18K!!' ) ) );
+one_t( 'invalid priceto symbol falls back to gold-18k', 'gold-18k' === $s['base_symbol_priceto'] );
+$s = One_Navasan_Settings::sanitize( array_merge( One_Navasan_Settings::all(), array( 'rate_source' => 'bogus' ) ) );
+one_t( 'unknown source value is ignored', 'manual' === $s['rate_source'] );
+$list = One_Navasan_Provider_Priceto::symbols( true );
+one_t( 'priceto symbol list loads from /v1/symbols and is cached', in_array( 'gold-18k', $list, true ) && in_array( 'coin-emami', $list, true ) && ! in_array( 'irr', $list, true ) && false !== get_transient( One_Navasan_Provider_Priceto::SYMBOLS_TRANSIENT ) );
+one_set( array( 'rate_source' => 'priceto', 'backup_source' => 'navasan' ) );
+ob_start();
+One_Navasan_Admin::render();
+$html = ob_get_clean();
+one_t( 'settings page offers the three sources and the backup', false !== strpos( $html, 'one-f-rate_source' ) && false !== strpos( $html, 'one-f-backup_source' ) && false !== strpos( $html, 'value="manual"' ) );
+one_t( 'settings page marks provider-specific fields', false !== strpos( $html, 'data-one-uses="priceto"' ) && false !== strpos( $html, 'data-one-uses="navasan"' ) && false !== strpos( $html, 'data-one-uses="manual"' ) );
+one_t( 'settings page credits both projects', false !== strpos( $html, 'margani/pricedb' ) && false !== strpos( $html, 'HosseinOdd/Navasan-API' ) && false !== strpos( $html, 'priceto.day' ) );
+one_t( 'settings page shows the current source', false !== strpos( $html, 'منبع نرخ فعلی' ) );
+
+// I. Request hygiene across the whole run.
+$allowed = array( 'api.priceto.day', 'raw.githubusercontent.com', 'api.github.com', 'cdn.jsdelivr.net' );
+$hosts_ok = true; $ua_ok = true; $timeout_ok = true;
+foreach ( $GLOBALS['one_requests_all'] as $rq ) {
+	$host      = wp_parse_url( $rq['url'], PHP_URL_HOST );
+	$is_ours   = ( 0 === strpos( $rq['ua'], 'One-Navasan-WordPress/' ) );
+	$to_source = in_array( $host, $allowed, true );
+	if ( $is_ours ) {
+		$hosts_ok   = $hosts_ok && $to_source; // Our requests only go to provider hosts.
+		$timeout_ok = $timeout_ok && 6 === (int) $rq['timeout'];
+	}
+	if ( $to_source ) {
+		$ua_ok = $ua_ok && 0 === strpos( $rq['ua'], 'One-Navasan-WordPress/' . ONE_NAVASAN_VERSION . ' ' ); // Requests to them carry name and version.
+	}
+}
+one_t( 'requests only go to the two providers hosts', $hosts_ok && count( $GLOBALS['one_requests_all'] ) > 10 );
+one_t( 'every request sends the plugin name and version', $ua_ok );
+one_t( 'every request has the short 6 second timeout', $timeout_ok );
+
+// Back to the Navasan-API source for the WooCommerce checks below (they use its fixed rate).
+one_set( array( 'rate_source' => 'navasan', 'backup_source' => 'none', 'max_jump_pct' => 0 ) );
+$GLOBALS['one_fixture']['value'] = 25035780;
+$GLOBALS['one_fixture']['date']  = time() - 600;
+One_Navasan_Rate_Service::refresh();
+one_set( array( 'max_jump_pct' => 10 ) );
+one_t( 'back on Navasan-API at the fixed rate', one_near( One_Navasan_Rate_Service::effective_toman(), 25035780 ) && 'navasan' === One_Navasan_Rate_Service::current_source()['id'] );
+wp_clear_scheduled_hook( One_Navasan_Scheduler::NOW_HOOK );
 
 if ( ! $has_wc ) {
 	// ---- No-WooCommerce checks ---------------------------------------------------
@@ -315,7 +505,7 @@ one_t( 'A: now skipped under attribute source (price from previous run stays)', 
 one_set( array( 'weight_source' => 'wc' ) );
 $run_apply();
 $manual_store = 30000000 * $mult;
-one_set( array( 'rate_mode' => 'manual', 'manual_rate' => (string) $manual_store ) );
+one_set( array( 'rate_source' => 'manual', 'manual_rate' => (string) $manual_store ) );
 one_t( 'manual mode effective rate', one_near( One_Navasan_Rate_Service::effective_toman(), 30000000 ) );
 $job = get_option( One_Navasan_WC_Pricing::JOB );
 one_t( 'settings change queued background job', is_array( $job ) && 'running' === $job['status'] );
@@ -338,7 +528,7 @@ $up = $price( $pa->get_id() );
 one_t( 'rounding up to 10000', 0 === (int) fmod( $up, 10000 ) && $up >= $exp( $manual_store, 18, 18, 1.22, 10, 7, 9, 0, 0 ) );
 
 // Auto mode again.
-one_set( array( 'rate_mode' => 'auto', 'round_step' => 1000, 'round_dir' => 'nearest' ) );
+one_set( array( 'rate_source' => 'navasan', 'round_step' => 1000, 'round_dir' => 'nearest' ) );
 while ( get_option( One_Navasan_WC_Pricing::JOB ) && $guard++ < 60 ) {
 	One_Navasan_WC_Pricing::background_step();
 }
