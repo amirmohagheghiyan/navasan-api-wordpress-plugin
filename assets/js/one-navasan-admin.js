@@ -7,6 +7,40 @@
 		return;
 	}
 
+	// Dim the fields that do not belong to the selected primary/backup source.
+	function updateSourceFields() {
+		var primary = document.getElementById('one-f-rate_source');
+		var backup = document.getElementById('one-f-backup_source');
+		if (!primary) { return; }
+		var p = primary.value;
+		var b = backup ? backup.value : 'none';
+		document.querySelectorAll('tr[data-one-uses]').forEach(function (row) {
+			var uses = row.getAttribute('data-one-uses');
+			var relevant = true;
+			if (uses === 'priceto' || uses === 'navasan') {
+				relevant = (p === uses || b === uses);
+			} else if (uses === 'manual') {
+				relevant = (p === 'manual');
+			} else if (uses === 'auto') {
+				relevant = (p !== 'manual');
+			}
+			row.classList.toggle('one-dim', !relevant);
+		});
+		if (backup) {
+			Array.prototype.forEach.call(backup.options, function (o) {
+				o.disabled = (o.value !== 'none' && o.value === p);
+			});
+			if (backup.options[backup.selectedIndex] && backup.options[backup.selectedIndex].disabled) {
+				backup.value = 'none';
+			}
+		}
+	}
+	['one-f-rate_source', 'one-f-backup_source'].forEach(function (id) {
+		var el = document.getElementById(id);
+		if (el) { el.addEventListener('change', updateSourceFields); }
+	});
+	updateSourceFields();
+
 	function post(action, data) {
 		var body = new URLSearchParams();
 		body.append('action', 'one_navasan_' + action);
@@ -140,6 +174,21 @@
 		} else if (action === 'test') {
 			simple('test', function (r) {
 				if (r.success) { result.innerHTML = r.data.html; } else { show(cfg.i18n.error, 'one-bad'); }
+			});
+		} else if (action === 'symbols') {
+			simple('symbols', function (r) {
+				var select = document.getElementById('one-f-base_symbol_priceto');
+				if (!r.success || !select) { show(cfg.i18n.error, 'one-bad'); return; }
+				var current = select.value;
+				select.innerHTML = '';
+				r.data.symbols.forEach(function (s) {
+					var o = document.createElement('option');
+					o.value = s;
+					o.textContent = s;
+					if (s === current) { o.selected = true; }
+					select.appendChild(o);
+				});
+				show(cfg.i18n.symbolsOk + ' ' + r.data.symbols.length, 'one-ok');
 			});
 		} else if (action === 'approve') {
 			simple('approve', function () { window.location.reload(); });

@@ -26,7 +26,7 @@ class One_Navasan_Admin {
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'assets' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'notices' ) );
 		add_filter( 'option_page_capability_' . self::GROUP, array( 'One_Navasan_Settings', 'capability' ) );
-		foreach ( array( 'fetch', 'test', 'chunk', 'approve' ) as $action ) {
+		foreach ( array( 'fetch', 'test', 'chunk', 'approve', 'symbols' ) as $action ) {
 			add_action( 'wp_ajax_one_navasan_' . $action, array( __CLASS__, 'ajax_' . $action ) );
 		}
 	}
@@ -89,6 +89,7 @@ class One_Navasan_Admin {
 				'i18n'  => array(
 					'working'   => __( 'در حال انجام…', ONE_NAVASAN_DOMAIN ),
 					'error'     => __( 'خطا در ارتباط با سرور.', ONE_NAVASAN_DOMAIN ),
+					'symbolsOk' => __( 'فهرست نمادها به‌روز شد. تعداد:', ONE_NAVASAN_DOMAIN ),
 					'progress'  => __( 'محصولات بررسی‌شده:', ONE_NAVASAN_DOMAIN ),
 					'previewOk' => __( 'پیش‌نمایش کامل شد. اگر قیمت‌ها درست است «اعمال قیمت‌ها» را بزنید.', ONE_NAVASAN_DOMAIN ),
 					'applyOk'   => __( 'قیمت‌ها اعمال شد.', ONE_NAVASAN_DOMAIN ),
@@ -116,14 +117,22 @@ class One_Navasan_Admin {
 		$url = esc_url( self::page_url() );
 		$pending = One_Navasan_Rate_Service::pending();
 		if ( $pending ) {
+			$by_source = ( isset( $pending['reason'] ) && 'source_change' === $pending['reason'] );
 			printf(
 				'<div class="notice notice-warning"><p>%s <a href="%s">%s</a></p></div>',
 				esc_html(
-					sprintf(
-						/* translators: %s: percent. */
-						__( 'نرخ تازهٔ طلا %s درصد با نرخ قبلی فرق دارد و اعمال نشد.', ONE_NAVASAN_DOMAIN ),
-						number_format_i18n( (float) $pending['pct'], 2 )
-					)
+					$by_source
+						? sprintf(
+							/* translators: 1: source name, 2: percent. */
+							__( 'منبع نرخ تغییر کرده است (نرخ تازه از %1$s است) و %2$s درصد با نرخ قبلی فرق دارد؛ اعمال نشد.', ONE_NAVASAN_DOMAIN ),
+							self::provider_name( isset( $pending['provider'] ) ? $pending['provider'] : 'navasan' ),
+							number_format_i18n( (float) $pending['pct'], 2 )
+						)
+						: sprintf(
+							/* translators: %s: percent. */
+							__( 'نرخ تازهٔ طلا %s درصد با نرخ قبلی فرق دارد و اعمال نشد.', ONE_NAVASAN_DOMAIN ),
+							number_format_i18n( (float) $pending['pct'], 2 )
+						)
 				),
 				$url,
 				esc_html__( 'بررسی و تأیید', ONE_NAVASAN_DOMAIN )
@@ -135,13 +144,32 @@ class One_Navasan_Admin {
 				esc_html(
 					sprintf(
 						/* translators: %s: hours. */
-						__( 'دادهٔ نرخ طلا بیش از %s ساعت قدیمی است. قیمت‌ها تغییری نکرده‌اند.', ONE_NAVASAN_DOMAIN ),
+						__( 'دادهٔ نرخ طلا بیش از %s ساعتِ بازار قدیمی است (شب‌ها، جمعه‌ها و عصر پنجشنبه حساب نمی‌شود). قیمت‌ها تغییری نکرده‌اند.', ONE_NAVASAN_DOMAIN ),
 						number_format_i18n( (float) One_Navasan_Settings::get( 'stale_hours' ) )
 					)
 				),
 				$url,
 				esc_html__( 'وضعیت', ONE_NAVASAN_DOMAIN )
 			);
+		}
+	}
+
+	/**
+	 * Display name of a source id.
+	 *
+	 * @param string $id priceto|navasan|manual|none.
+	 * @return string
+	 */
+	public static function provider_name( $id ) {
+		switch ( $id ) {
+			case 'priceto':
+				return 'priceto.day';
+			case 'navasan':
+				return 'Navasan-API';
+			case 'manual':
+				return __( 'دستی', ONE_NAVASAN_DOMAIN );
+			default:
+				return '—';
 		}
 	}
 
@@ -183,9 +211,9 @@ class One_Navasan_Admin {
 	 */
 	public static function ajax_test() {
 		self::guard();
-		$html = '<table class="widefat striped one-table"><thead><tr><th>' . esc_html__( 'منبع', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'نتیجه', ONE_NAVASAN_DOMAIN ) . '</th><th>HTTP</th><th>' . esc_html__( 'زمان', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'نرخ نماد پایه', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'زمان داده', ONE_NAVASAN_DOMAIN ) . '</th></tr></thead><tbody>';
+		$html = '<table class="widefat striped one-table"><thead><tr><th>' . esc_html__( 'منبع', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'مسیر', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'نتیجه', ONE_NAVASAN_DOMAIN ) . '</th><th>HTTP</th><th>' . esc_html__( 'زمان', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'نرخ (تومان)', ONE_NAVASAN_DOMAIN ) . '</th><th>' . esc_html__( 'زمان داده', ONE_NAVASAN_DOMAIN ) . '</th></tr></thead><tbody>';
 		foreach ( One_Navasan_Fetcher::test_all() as $row ) {
-			$html .= '<tr><td>' . esc_html( $row['label'] ) . '<br><code class="one-url">' . esc_html( $row['url'] ) . '</code></td>'
+			$html .= '<tr><td><strong>' . esc_html( $row['provider'] ) . '</strong></td><td>' . esc_html( $row['label'] ) . '<br><code class="one-url">' . esc_html( $row['url'] ) . '</code></td>'
 				. '<td class="' . ( $row['ok'] ? 'one-ok' : 'one-bad' ) . '">' . ( $row['ok'] ? esc_html__( 'موفق', ONE_NAVASAN_DOMAIN ) : esc_html__( 'ناموفق', ONE_NAVASAN_DOMAIN ) . ': ' . esc_html( $row['error'] ) ) . '</td>'
 				. '<td>' . esc_html( $row['http'] ? $row['http'] : '—' ) . '</td>'
 				. '<td>' . esc_html( $row['ms'] ) . ' ms</td>'
@@ -194,9 +222,18 @@ class One_Navasan_Admin {
 		}
 		$html .= '</tbody></table>';
 		if ( One_Navasan_Settings::DEFAULT_URL !== One_Navasan_Settings::get( 'source_url' ) ) {
-			$html .= '<p class="description">' . esc_html__( 'برای منبع سفارشی، آدرس‌های پشتیبان GitHub/jsDelivr استفاده نمی‌شوند.', ONE_NAVASAN_DOMAIN ) . '</p>';
+			$html .= '<p class="description">' . esc_html__( 'برای آدرس سفارشی Navasan-API، مسیرهای پشتیبان GitHub/jsDelivr استفاده نمی‌شوند.', ONE_NAVASAN_DOMAIN ) . '</p>';
 		}
+		$html .= '<p class="description">' . esc_html__( 'priceto.day ریال می‌دهد و Navasan-API تومان؛ ستون نرخ در هر دو حالت تومان است. این تست مسیرهایی را که پیشتر شکست خورده‌اند هم دوباره امتحان می‌کند.', ONE_NAVASAN_DOMAIN ) . '</p>';
 		wp_send_json_success( array( 'html' => $html ) );
+	}
+
+	/**
+	 * Reload the priceto.day symbol list.
+	 */
+	public static function ajax_symbols() {
+		self::guard();
+		wp_send_json_success( array( 'symbols' => One_Navasan_Provider_Priceto::symbols( true ) ) );
 	}
 
 	/**
@@ -272,8 +309,20 @@ class One_Navasan_Admin {
 		$name  = One_Navasan_Settings::OPTION . '[' . $f['key'] . ']';
 		$id    = 'one-f-' . $f['key'];
 		$value = isset( $s[ $f['key'] ] ) ? $s[ $f['key'] ] : '';
-		echo '<tr><th scope="row"><label for="' . esc_attr( $id ) . '">' . esc_html( $f['label'] ) . '</label></th><td>';
+		$uses = isset( $f['uses'] ) ? ' data-one-uses="' . esc_attr( $f['uses'] ) . '"' : '';
+		echo '<tr' . $uses . '><th scope="row"><label for="' . esc_attr( $id ) . '">' . esc_html( $f['label'] ) . '</label></th><td>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $uses escaped above.
 		switch ( $f['type'] ) {
+			case 'symbols':
+				$list = One_Navasan_Provider_Priceto::symbols();
+				if ( '' !== (string) $value && ! in_array( (string) $value, $list, true ) ) {
+					array_unshift( $list, (string) $value );
+				}
+				echo '<select id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" dir="ltr">';
+				foreach ( $list as $symbol ) {
+					echo '<option value="' . esc_attr( $symbol ) . '"' . selected( (string) $value, $symbol, false ) . '>' . esc_html( $symbol ) . '</option>';
+				}
+				echo '</select> <button type="button" class="button" data-one-action="symbols">' . esc_html__( 'به‌روزرسانی فهرست نمادها', ONE_NAVASAN_DOMAIN ) . '</button>';
+				break;
 			case 'select':
 				echo '<select id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '">';
 				foreach ( $f['options'] as $ov => $ol ) {
@@ -333,30 +382,33 @@ class One_Navasan_Admin {
 		$d = ONE_NAVASAN_DOMAIN;
 		$sections = array(
 			array(
-				'title'  => __( 'منبع و به‌روزرسانی', $d ),
+				'title'  => __( 'منبع نرخ', $d ),
 				'fields' => array(
-					array( 'key' => 'source_url', 'type' => 'text', 'label' => __( 'آدرس منبع', $d ), 'desc' => __( 'پیش‌فرض: فایل gold.json پروژهٔ Navasan-API. منبع سازگار دیگری هم می‌تواند باشد؛ در آدرس می‌توانید {key} بگذارید.', $d ) ),
-					array( 'key' => 'api_key', 'type' => 'password', 'label' => __( 'کلید API (اختیاری)', $d ), 'desc' => __( 'Navasan-API کلید نمی‌خواهد. این فیلد برای توکن گیت‌هاب (بالا بردن سقف درخواست Contents API) یا منبعی است که کلید می‌خواهد. کلید در لاگ نوشته نمی‌شود.', $d ) ),
-					array( 'key' => 'key_method', 'type' => 'select', 'label' => __( 'روش ارسال کلید', $d ), 'options' => array( 'bearer' => __( 'هدر Authorization: Bearer', $d ), 'url' => __( 'جایگزینی {key} در آدرس', $d ) ) ),
-					array( 'key' => 'base_symbol', 'type' => 'text', 'label' => __( 'نماد نرخ پایه', $d ), 'desc' => __( 'پیش‌فرض 18ayar (قیمت هر گرم طلای ۱۸ عیار به تومان).', $d ) ),
-					array( 'key' => 'base_karat', 'type' => 'number', 'label' => __( 'عیار نرخ پایه', $d ), 'min' => 1, 'max' => 24, 'step' => 'any' ),
-					array( 'key' => 'interval', 'type' => 'number', 'label' => __( 'فاصلهٔ به‌روزرسانی (دقیقه)', $d ), 'min' => 5, 'max' => 1440, 'desc' => __( 'حداقل ۵ دقیقه. منبع خودش حدوداً هر ۳۰ دقیقه تازه می‌شود.', $d ) ),
+					array( 'key' => 'rate_source', 'type' => 'select', 'label' => __( 'منبع نرخ', $d ), 'options' => array( 'priceto' => __( 'priceto.day (بازار tgju.org، ریال)', $d ), 'navasan' => __( 'Navasan-API (فایل JSON، تومان)', $d ), 'manual' => __( 'دستی', $d ) ), 'desc' => __( 'priceto.day معمولاً تازه‌تر است؛ Navasan-API گاهی چند ساعت عقب می‌ماند. در حالت «دستی» هیچ دریافتی انجام نمی‌شود.', $d ) ),
+					array( 'key' => 'backup_source', 'type' => 'select', 'label' => __( 'منبع پشتیبان', $d ), 'options' => array( 'none' => __( 'هیچ‌کدام', $d ), 'priceto' => __( 'priceto.day', $d ), 'navasan' => __( 'Navasan-API', $d ) ), 'desc' => __( 'فقط وقتی استفاده می‌شود که منبع اصلی شکست بخورد و زمان دادهٔ پشتیبان از آخرین نرخ سالم جدیدتر باشد. برابر با منبع اصلی نمی‌شود.', $d ) ),
+					array( 'key' => 'base_symbol_priceto', 'type' => 'symbols', 'uses' => 'priceto', 'label' => __( 'نماد پایه در priceto.day', $d ), 'desc' => __( 'پیش‌فرض gold-18k (قیمت هر گرم طلای ۱۸ عیار؛ خود سرویس ریال می‌دهد و افزونه به تومان تبدیل می‌کند).', $d ) ),
+					array( 'key' => 'priceto_fetch_change', 'type' => 'checkbox', 'uses' => 'priceto', 'label' => __( 'تغییر روز از priceto.day', $d ), 'check_label' => __( 'یک درخواست اضافه برای مقدار و درصد تغییر روز', $d ), 'desc' => __( 'اگر خاموش باشد، مقدار و درصد تغییر در شورت‌کد و REST خالی می‌ماند.', $d ) ),
+					array( 'key' => 'source_url', 'type' => 'text', 'uses' => 'navasan', 'label' => __( 'آدرس منبع Navasan-API', $d ), 'desc' => __( 'پیش‌فرض: فایل gold.json پروژهٔ Navasan-API. منبع سازگار دیگری هم می‌تواند باشد؛ در آدرس می‌توانید {key} بگذارید.', $d ) ),
+					array( 'key' => 'api_key', 'type' => 'password', 'uses' => 'navasan', 'label' => __( 'کلید API (اختیاری)', $d ), 'desc' => __( 'Navasan-API کلید نمی‌خواهد. این فیلد برای توکن گیت‌هاب (بالا بردن سقف درخواست Contents API) یا منبعی است که کلید می‌خواهد. کلید فقط به مسیرهای Navasan-API فرستاده می‌شود و در لاگ نوشته نمی‌شود.', $d ) ),
+					array( 'key' => 'key_method', 'type' => 'select', 'uses' => 'navasan', 'label' => __( 'روش ارسال کلید', $d ), 'options' => array( 'bearer' => __( 'هدر Authorization: Bearer', $d ), 'url' => __( 'جایگزینی {key} در آدرس', $d ) ) ),
+					array( 'key' => 'base_symbol', 'type' => 'text', 'uses' => 'navasan', 'label' => __( 'نماد پایه در Navasan-API', $d ), 'desc' => __( 'پیش‌فرض 18ayar (قیمت هر گرم طلای ۱۸ عیار به تومان).', $d ) ),
+					array( 'key' => 'base_karat', 'type' => 'number', 'label' => __( 'عیار نرخ پایه', $d ), 'min' => 1, 'max' => 24, 'step' => 'any', 'desc' => __( 'برای هر دو منبع یکی است.', $d ) ),
+					array( 'key' => 'interval', 'type' => 'number', 'uses' => 'auto', 'label' => __( 'فاصلهٔ به‌روزرسانی (دقیقه)', $d ), 'min' => 5, 'max' => 1440, 'desc' => __( 'حداقل ۵ دقیقه. هر دو منبع حدوداً هر ۳۰ دقیقه تازه می‌شوند؛ این‌ها سرویس‌های رایگان‌اند، فاصلهٔ کمتر از ۳۰ دقیقه فایده‌ای ندارد.', $d ) ),
 				),
 			),
 			array(
 				'title'  => __( 'نرخ دستی و تعدیل', $d ),
 				'fields' => array(
-					array( 'key' => 'rate_mode', 'type' => 'select', 'label' => __( 'حالت نرخ', $d ), 'options' => array( 'auto' => __( 'خودکار از منبع', $d ), 'manual' => __( 'دستی', $d ) ) ),
-					array( 'key' => 'manual_rate', 'type' => 'text', 'label' => __( 'قیمت دستی هر گرم', $d ), 'desc' => __( 'به واحد ارز فروشگاه. در حالت دستی منبع نادیده گرفته می‌شود.', $d ) ),
-					array( 'key' => 'adjust_mode', 'type' => 'select', 'label' => __( 'تعدیل نرخ خودکار', $d ), 'options' => array( 'none' => __( 'بدون تعدیل', $d ), 'percent' => __( 'درصد', $d ), 'fixed' => __( 'مبلغ ثابت (تومان)', $d ) ) ),
-					array( 'key' => 'adjust_value', 'type' => 'text', 'label' => __( 'مقدار تعدیل', $d ), 'desc' => __( 'مثبت یا منفی. درصد، یا مبلغ تومان که به نرخ منبع اضافه/کم می‌شود.', $d ) ),
+					array( 'key' => 'manual_rate', 'type' => 'text', 'uses' => 'manual', 'label' => __( 'قیمت دستی هر گرم', $d ), 'desc' => __( 'به واحد ارز فروشگاه. فقط وقتی «منبع نرخ» دستی است استفاده می‌شود.', $d ) ),
+					array( 'key' => 'adjust_mode', 'type' => 'select', 'uses' => 'auto', 'label' => __( 'تعدیل نرخ خودکار', $d ), 'options' => array( 'none' => __( 'بدون تعدیل', $d ), 'percent' => __( 'درصد', $d ), 'fixed' => __( 'مبلغ ثابت (تومان)', $d ) ) ),
+					array( 'key' => 'adjust_value', 'type' => 'text', 'uses' => 'auto', 'label' => __( 'مقدار تعدیل', $d ), 'desc' => __( 'مثبت یا منفی. درصد، یا مبلغ تومان که به نرخ منبع اضافه/کم می‌شود.', $d ) ),
 				),
 			),
 			array(
 				'title'  => __( 'محافظ‌ها', $d ),
 				'fields' => array(
 					array( 'key' => 'max_jump_pct', 'type' => 'number', 'label' => __( 'حداکثر جهش مجاز (درصد)', $d ), 'min' => 0, 'step' => 'any', 'desc' => __( 'نرخ جدیدی که بیش از این با نرخ قبلی فرق کند اعمال نمی‌شود و منتظر تأیید می‌ماند. ۰ = غیرفعال.', $d ) ),
-					array( 'key' => 'stale_hours', 'type' => 'number', 'label' => __( 'هشدار دادهٔ کهنه (ساعت)', $d ), 'min' => 0, 'step' => 'any' ),
+					array( 'key' => 'stale_hours', 'type' => 'number', 'uses' => 'auto', 'label' => __( 'هشدار دادهٔ کهنه (ساعت بازار)', $d ), 'min' => 0, 'step' => 'any', 'desc' => __( 'فقط ساعت‌های باز بودن بازار حساب می‌شود (شنبه تا چهارشنبه ۰۸:۰۰ تا ۲۲:۰۰، پنجشنبه تا ۱۴:۰۰، جمعه تعطیل؛ وقت تهران). ۰ = غیرفعال. تغییر منبع هم جزو جهش‌ها حساب می‌شود.', $d ) ),
 				),
 			),
 			array(
@@ -431,8 +483,9 @@ class One_Navasan_Admin {
 	 * @return string
 	 */
 	private static function credit_html() {
-		return esc_html__( 'منبع داده / Powered by', ONE_NAVASAN_DOMAIN ) . ' <a href="https://github.com/HosseinOdd/Navasan-API" target="_blank" rel="noopener noreferrer">Navasan-API</a> '
-			. esc_html__( 'ساختهٔ Hossein (HosseinOdd). افزونه فقط فایل JSON همان مخزن را می‌خواند؛ داده بدون تضمین است و مسئولیت درستی قیمت‌ها با مدیر سایت است.', ONE_NAVASAN_DOMAIN );
+		return esc_html__( 'منبع داده / Powered by', ONE_NAVASAN_DOMAIN ) . ' <a href="https://priceto.day" target="_blank" rel="noopener noreferrer">priceto.day</a> '
+			. esc_html__( '(پروژهٔ margani/pricedb از Hossein Margani، لایسنس MIT، داده از tgju.org) و', ONE_NAVASAN_DOMAIN ) . ' <a href="https://github.com/HosseinOdd/Navasan-API" target="_blank" rel="noopener noreferrer">Navasan-API</a> '
+			. esc_html__( '(ساختهٔ Hossein، HosseinOdd، داده از navasan.net). افزونه فقط API و فایل JSON آن‌ها را می‌خواند؛ داده بدون تضمین است و مسئولیت درستی قیمت‌ها با مدیر سایت است.', ONE_NAVASAN_DOMAIN );
 	}
 
 	/**
@@ -454,6 +507,12 @@ class One_Navasan_Admin {
 		} else {
 			$row( __( 'نرخ فعلی', ONE_NAVASAN_DOMAIN ), esc_html__( 'هنوز نرخی دریافت نشده است.', ONE_NAVASAN_DOMAIN ) );
 		}
+		$src     = One_Navasan_Rate_Service::current_source();
+		$src_txt = esc_html( self::provider_name( $src['id'] ) );
+		if ( $src['via_backup'] ) {
+			$src_txt = '<strong class="one-warn">' . $src_txt . ' — ' . esc_html__( '⚠ منبع پشتیبان (منبع اصلی پاسخ نداد)', ONE_NAVASAN_DOMAIN ) . '</strong>';
+		}
+		$row( __( 'منبع نرخ فعلی', ONE_NAVASAN_DOMAIN ), $src_txt );
 		$row( __( 'زمان آخرین دریافت', ONE_NAVASAN_DOMAIN ), esc_html( ! empty( $state['fetched_at'] ) ? wp_date( 'Y/m/d H:i:s', (int) $state['fetched_at'] ) : '—' ) );
 		$data_ts = One_Navasan_Rate_Service::data_ts();
 		$row( __( 'زمان خودِ داده', ONE_NAVASAN_DOMAIN ), esc_html( $data_ts ? wp_date( 'Y/m/d H:i:s', $data_ts ) : '—' ) . ( One_Navasan_Rate_Service::is_stale() ? ' <strong class="one-bad">' . esc_html__( '⚠ کهنه', ONE_NAVASAN_DOMAIN ) . '</strong>' : '' ) );
@@ -464,6 +523,7 @@ class One_Navasan_Admin {
 			$row(
 				__( 'نرخ در انتظار تأیید', ONE_NAVASAN_DOMAIN ),
 				esc_html( sprintf( /* translators: 1: new value, 2: old value, 3: percent. */ __( 'نرخ جدید %1$s (قبلی %2$s، تغییر %3$s٪)', ONE_NAVASAN_DOMAIN ), One_Navasan_Number_Formatter::format( $pending['new_value'] ), One_Navasan_Number_Formatter::format( $pending['old_value'] ), $pending['pct'] ) )
+				. ( isset( $pending['reason'] ) && 'source_change' === $pending['reason'] ? ' — ' . esc_html( sprintf( /* translators: %s: source name. */ __( 'علت: تغییر منبع (نرخ تازه از %s)', ONE_NAVASAN_DOMAIN ), self::provider_name( isset( $pending['provider'] ) ? $pending['provider'] : 'navasan' ) ) ) : '' )
 				. ' <button type="button" class="button button-primary" data-one-action="approve">' . esc_html__( 'تأیید و اعمال', ONE_NAVASAN_DOMAIN ) . '</button>'
 			);
 		}
