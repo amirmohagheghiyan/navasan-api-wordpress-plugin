@@ -35,6 +35,7 @@ class One_Navasan_Plugin {
 	 * Initialize components.
 	 */
 	public function init() {
+		One_Navasan_Upgrade::init();
 		One_Navasan_Scheduler::init();
 		One_Navasan_Shortcode::init();
 		One_Navasan_Rest::init();

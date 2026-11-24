@@ -14,6 +14,7 @@ global $wpdb;
 // Schedules.
 wp_clear_scheduled_hook( 'one_navasan_fetch_event' );
 wp_clear_scheduled_hook( 'one_navasan_job_event' );
+wp_clear_scheduled_hook( 'one_navasan_refresh_now_event' );
 if ( function_exists( 'as_unschedule_all_actions' ) && class_exists( 'ActionScheduler' ) && did_action( 'init' ) ) {
 	as_unschedule_all_actions( 'one_navasan_fetch_event' );
 	as_unschedule_all_actions( 'one_navasan_job_event' );

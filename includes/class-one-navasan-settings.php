@@ -23,13 +23,16 @@ class One_Navasan_Settings {
 	 */
 	public static function defaults() {
 		return array(
+			'rate_source'          => 'priceto', // priceto|navasan|manual.
+			'backup_source'        => 'navasan', // none|priceto|navasan.
+			'base_symbol_priceto'  => 'gold-18k',
+			'priceto_fetch_change' => 1,
 			'source_url'      => self::DEFAULT_URL,
 			'api_key'         => '',
 			'key_method'      => 'bearer', // bearer|url.
-			'base_symbol'     => '18ayar',
+			'base_symbol'     => '18ayar', // Navasan-API symbol (key kept from 1.0.0).
 			'base_karat'      => 18,
 			'interval'        => 30,
-			'rate_mode'       => 'auto', // auto|manual.
 			'manual_rate'     => '',
 			'manual_ts'       => 0,
 			'adjust_mode'     => 'none', // none|percent|fixed.
@@ -63,7 +66,48 @@ class One_Navasan_Settings {
 	 */
 	public static function all() {
 		$saved = get_option( self::OPTION, array() );
-		return array_merge( self::defaults(), is_array( $saved ) ? $saved : array() );
+		$saved = is_array( $saved ) ? $saved : array();
+		// A 1.0.0 layout (rate_mode) is read as the equivalent 1.1.0 source until the upgrade routine stores it.
+		if ( $saved && One_Navasan_Settings_Migrator::needs_migration( $saved ) ) {
+			$saved = One_Navasan_Settings_Migrator::migrate( $saved );
+		}
+		return array_merge( self::defaults(), $saved );
+	}
+
+	/**
+	 * Is the rate entered by hand?
+	 *
+	 * @return bool
+	 */
+	public static function is_manual() {
+		return 'manual' === self::get( 'rate_source' );
+	}
+
+	/**
+	 * Base symbol of the configured automatic source (Navasan-API symbol in manual mode).
+	 *
+	 * @return string
+	 */
+	public static function base_symbol() {
+		$s        = self::all();
+		$provider = One_Navasan_Fetcher::provider( (string) $s['rate_source'] );
+		if ( ! $provider ) {
+			$provider = One_Navasan_Fetcher::provider( 'navasan' );
+		}
+		return $provider->base_symbol( $s );
+	}
+
+	/**
+	 * Base symbols of both providers (a shortcode written for either keeps working).
+	 *
+	 * @return string[]
+	 */
+	public static function base_symbol_aliases() {
+		$s = self::all();
+		return array_values( array_unique( array(
+			One_Navasan_Fetcher::provider( 'priceto' )->base_symbol( $s ),
+			One_Navasan_Fetcher::provider( 'navasan' )->base_symbol( $s ),
+		) ) );
 	}
 
 	/**
@@ -171,11 +215,24 @@ class One_Navasan_Settings {
 		if ( '' === $out['base_symbol'] ) {
 			$out['base_symbol'] = '18ayar';
 		}
+		// priceto.day symbols are lowercase letters, digits and dashes.
+		if ( $has( 'base_symbol_priceto' ) && is_scalar( $input['base_symbol_priceto'] ) ) {
+			$symbol = strtolower( trim( sanitize_text_field( wp_unslash( (string) $input['base_symbol_priceto'] ) ) ) );
+			$out['base_symbol_priceto'] = 1 === preg_match( '/^[a-z0-9][a-z0-9-]{0,40}$/', $symbol ) ? $symbol : 'gold-18k';
+		}
+		if ( $has( 'priceto_fetch_change' ) ) {
+			$out['priceto_fetch_change'] = empty( $input['priceto_fetch_change'] ) ? 0 : 1;
+		}
 		$num( 'base_karat', 1, 24 );
 		$num( 'interval', 5, 1440 );
 		$out['interval'] = (int) $out['interval'];
 
-		$choice( 'rate_mode', array( 'auto', 'manual' ) );
+		$choice( 'rate_source', array( 'priceto', 'navasan', 'manual' ) );
+		$choice( 'backup_source', array( 'none', 'priceto', 'navasan' ) );
+		if ( $out['backup_source'] === $out['rate_source'] ) {
+			$out['backup_source'] = 'none'; // A source cannot back itself up.
+		}
+		unset( $out['rate_mode'] );
 		if ( $has( 'manual_rate' ) ) {
 			$manual = One_Navasan_Number_Parser::parse_positive( is_scalar( $input['manual_rate'] ) ? (string) $input['manual_rate'] : '' );
 			$out['manual_rate'] = null === $manual ? '' : $manual;

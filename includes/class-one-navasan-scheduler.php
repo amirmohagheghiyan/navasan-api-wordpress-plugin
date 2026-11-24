@@ -13,6 +13,7 @@ defined( 'ABSPATH' ) || exit;
 class One_Navasan_Scheduler {
 
 	const HOOK     = 'one_navasan_fetch_event';
+	const NOW_HOOK = 'one_navasan_refresh_now_event';
 	const SCHEDULE = 'one_navasan_interval';
 	const SIG      = 'one_navasan_schedule_sig';
 	const GROUP    = 'one-navasan';
@@ -23,6 +24,7 @@ class One_Navasan_Scheduler {
 	public static function init() {
 		add_filter( 'cron_schedules', array( __CLASS__, 'add_schedule' ) );
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
+		add_action( self::NOW_HOOK, array( __CLASS__, 'run' ) );
 		add_action( 'init', array( __CLASS__, 'ensure' ), 30 );
 		add_action( 'update_option_' . One_Navasan_Settings::OPTION, array( __CLASS__, 'on_settings_updated' ), 10, 2 );
 	}
@@ -96,6 +98,7 @@ class One_Navasan_Scheduler {
 	 */
 	public static function unschedule() {
 		wp_clear_scheduled_hook( self::HOOK );
+		wp_clear_scheduled_hook( self::NOW_HOOK );
 		if ( function_exists( 'as_unschedule_all_actions' ) && class_exists( 'ActionScheduler' ) && did_action( 'init' ) ) {
 			as_unschedule_all_actions( self::HOOK );
 		}
@@ -109,6 +112,16 @@ class One_Navasan_Scheduler {
 	 */
 	public static function on_settings_updated( $old, $new ) {
 		self::schedule();
+		// A changed source needs a fresh rate soon (separate hook: WP-Cron drops near-duplicate events of one hook).
+		$watch = array( 'rate_source', 'backup_source', 'base_symbol', 'base_symbol_priceto', 'source_url', 'priceto_fetch_change' );
+		foreach ( $watch as $key ) {
+			$a = is_array( $old ) && isset( $old[ $key ] ) ? $old[ $key ] : null;
+			$b = is_array( $new ) && isset( $new[ $key ] ) ? $new[ $key ] : null;
+			if ( $a !== $b && ! wp_next_scheduled( self::NOW_HOOK ) ) {
+				wp_schedule_single_event( time() + 5, self::NOW_HOOK );
+				break;
+			}
+		}
 		if ( class_exists( 'One_Navasan_WC_Pricing' ) && class_exists( 'WooCommerce' ) ) {
 			One_Navasan_WC_Pricing::maybe_start_recalculation();
 		}
@@ -118,7 +131,7 @@ class One_Navasan_Scheduler {
 	 * Cron/Action Scheduler callback.
 	 */
 	public static function run() {
-		if ( 'manual' === One_Navasan_Settings::get( 'rate_mode' ) ) {
+		if ( One_Navasan_Settings::is_manual() ) {
 			return;
 		}
 		One_Navasan_Rate_Service::refresh();

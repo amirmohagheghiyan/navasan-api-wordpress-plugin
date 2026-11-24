@@ -18,7 +18,7 @@ class One_Navasan_Rate_Service {
 	const ERROR   = 'one_navasan_last_error';
 
 	/**
-	 * Stored state {symbols, fetched_at, source, base_symbol}.
+	 * Stored state {symbols, fetched_at, source (path id), provider, via_backup, base_symbol}.
 	 *
 	 * @return array
 	 */
@@ -28,14 +28,41 @@ class One_Navasan_Rate_Service {
 	}
 
 	/**
+	 * Base symbol of the stored data. It follows the data, not the settings, so switching the
+	 * source in the dashboard never blanks the rate before the next fetch.
+	 *
+	 * @return string
+	 */
+	public static function stored_base_symbol() {
+		$state = self::state();
+		if ( ! empty( $state['base_symbol'] ) && isset( $state['symbols'][ $state['base_symbol'] ] ) ) {
+			return (string) $state['base_symbol'];
+		}
+		return One_Navasan_Settings::base_symbol();
+	}
+
+	/**
+	 * Provider of the stored rate (legacy state without the field is Navasan-API).
+	 *
+	 * @return string|null Null when nothing is stored.
+	 */
+	public static function stored_provider() {
+		$state = self::state();
+		if ( empty( $state['symbols'] ) ) {
+			return null;
+		}
+		return ! empty( $state['provider'] ) ? (string) $state['provider'] : 'navasan';
+	}
+
+	/**
 	 * Raw base-symbol entry from the source.
 	 *
-	 * @param string|null $symbol Symbol (default base).
+	 * @param string|null $symbol Symbol (default: base symbol of the stored data).
 	 * @return array|null
 	 */
 	public static function raw_entry( $symbol = null ) {
-		$symbol = null === $symbol ? (string) One_Navasan_Settings::get( 'base_symbol' ) : $symbol;
 		$state  = self::state();
+		$symbol = null === $symbol ? self::stored_base_symbol() : $symbol;
 		return isset( $state['symbols'][ $symbol ] ) ? $state['symbols'][ $symbol ] : null;
 	}
 
@@ -56,7 +83,7 @@ class One_Navasan_Rate_Service {
 	 */
 	public static function effective_toman() {
 		$s = One_Navasan_Settings::all();
-		if ( 'manual' === $s['rate_mode'] ) {
+		if ( 'manual' === $s['rate_source'] ) {
 			$manual = One_Navasan_Number_Parser::parse_positive( $s['manual_rate'] );
 			$toman  = null === $manual ? null : One_Navasan_Currency::to_toman( $manual, One_Navasan_Settings::multiplier() );
 		} else {
@@ -87,6 +114,23 @@ class One_Navasan_Rate_Service {
 	}
 
 	/**
+	 * Which source the current rate comes from.
+	 *
+	 * @return array {id:string (priceto|navasan|manual|none), via_backup:bool}
+	 */
+	public static function current_source() {
+		if ( One_Navasan_Settings::is_manual() ) {
+			return array( 'id' => 'manual', 'via_backup' => false );
+		}
+		$provider = self::stored_provider();
+		$state    = self::state();
+		return array(
+			'id'         => null === $provider ? 'none' : $provider,
+			'via_backup' => ! empty( $state['via_backup'] ),
+		);
+	}
+
+	/**
 	 * Output for a symbol (shortcode / REST / JS).
 	 *
 	 * @param string|null $symbol Symbol (default base).
@@ -94,11 +138,13 @@ class One_Navasan_Rate_Service {
 	 */
 	public static function symbol_output( $symbol = null ) {
 		$s       = One_Navasan_Settings::all();
-		$base    = (string) $s['base_symbol'];
-		$symbol  = ( null === $symbol || '' === $symbol ) ? $base : $symbol;
+		$aliases = One_Navasan_Settings::base_symbol_aliases();
+		$base    = self::stored_base_symbol();
+		// The base symbol of either provider means "the base rate", so existing shortcodes keep working.
+		$symbol  = ( null === $symbol || '' === $symbol || in_array( $symbol, $aliases, true ) ) ? $base : $symbol;
 		$is_base = ( $symbol === $base );
 		$entry   = self::raw_entry( $symbol );
-		$manual  = ( $is_base && 'manual' === $s['rate_mode'] );
+		$manual  = ( $is_base && 'manual' === $s['rate_source'] );
 		if ( ! $entry && ! $manual ) {
 			return null;
 		}
@@ -117,30 +163,47 @@ class One_Navasan_Rate_Service {
 		} else {
 			$value = $entry['value'];
 		}
-		$state = self::state();
+
+		// High and low: the source's own range when it gives one, otherwise the range seen by this plugin today.
+		if ( $manual ) {
+			$high = $value;
+			$low  = $value;
+		} elseif ( $entry && isset( $entry['high'], $entry['low'] ) ) {
+			$high = $adj( (float) $entry['high'] );
+			$low  = $adj( (float) $entry['low'] );
+		} else {
+			$high = $range ? $adj( $range['max'] ) : $value;
+			$low  = $range ? $adj( $range['min'] ) : $value;
+		}
+
+		$state  = self::state();
+		$source = $manual ? 'manual' : ( ! empty( $state['provider'] ) ? (string) $state['provider'] : 'navasan' );
 		return array(
 			'symbol'     => $symbol,
 			'value'      => $value,
 			'change_val' => $manual ? 0 : ( $entry ? $entry['change_val'] : null ),
 			'change_pct' => $manual ? 0 : ( $entry ? $entry['change_pct'] : null ),
-			'high'       => $manual ? $value : ( $range ? $adj( $range['max'] ) : $value ),
-			'low'        => $manual ? $value : ( $range ? $adj( $range['min'] ) : $value ),
+			'high'       => $high,
+			'low'        => $low,
 			'updated'    => $manual ? ( (int) $s['manual_ts'] ?: null ) : ( $entry && $entry['date'] ? (int) $entry['date'] : ( isset( $state['fetched_at'] ) ? (int) $state['fetched_at'] : null ) ),
 			'fetched_at' => isset( $state['fetched_at'] ) ? (int) $state['fetched_at'] : null,
 			'mode'       => $manual ? 'manual' : 'auto',
+			'source'     => $source,
 		);
 	}
 
 	/**
-	 * Is the data stale?
+	 * Is the data stale? Only market-open time counts, so nights, Fridays and Thursday
+	 * afternoons never raise the warning by themselves.
 	 *
+	 * @param int|null $now Unix time to judge at (default: now; used by tests).
 	 * @return bool
 	 */
-	public static function is_stale() {
-		if ( 'manual' === One_Navasan_Settings::get( 'rate_mode' ) ) {
+	public static function is_stale( $now = null ) {
+		if ( One_Navasan_Settings::is_manual() ) {
 			return false;
 		}
-		return One_Navasan_Guard::is_stale( self::data_ts(), time(), (float) One_Navasan_Settings::get( 'stale_hours' ) );
+		return One_Navasan_Market_Hours::is_stale( self::data_ts(), null === $now ? time() : (int) $now, (float) One_Navasan_Settings::get( 'stale_hours' ) );
 	}
 
 	/**
@@ -156,40 +219,80 @@ class One_Navasan_Rate_Service {
 	/**
 	 * Fetch and (if healthy) store the rate.
 	 *
+	 * The primary source is tried first. The backup is tried only when the primary fails, and its
+	 * result is used only when its data is newer than the last healthy rate.
+	 *
 	 * @return array {ok:bool, status:string, message:string}
 	 */
 	public static function refresh() {
-		$symbol = (string) One_Navasan_Settings::get( 'base_symbol' );
-		$result = One_Navasan_Fetcher::fetch( $symbol, self::data_ts() );
-		if ( ! $result['ok'] ) {
-			update_option( self::ERROR, $result['error'] . ' @' . time(), false );
-			One_Navasan_Logger::add( 'error', sprintf( 'Fetch failed, kept last healthy rate (%s).', $result['error'] ) );
+		$s    = One_Navasan_Settings::all();
+		$plan = One_Navasan_Source_Selector::plan( (string) $s['rate_source'], (string) $s['backup_source'] );
+		if ( ! $plan ) {
+			return array( 'ok' => false, 'status' => 'manual', 'message' => __( 'منبع نرخ روی «دستی» است؛ دریافتی انجام نشد.', ONE_NAVASAN_DOMAIN ) );
+		}
+
+		$stored_ts  = self::data_ts();
+		$errors     = array();
+		$result     = null;
+		$used       = null;
+		$via_backup = false;
+		foreach ( $plan as $index => $provider_id ) {
+			$provider = One_Navasan_Fetcher::provider( $provider_id );
+			$try      = One_Navasan_Fetcher::fetch_provider( $provider, $stored_ts );
+			if ( ! $try['ok'] ) {
+				$errors[] = $try['error'];
+				continue;
+			}
+			if ( $index > 0 ) {
+				$entry = $try['symbols'][ $provider->base_symbol( $s ) ];
+				if ( ! One_Navasan_Source_Selector::backup_is_newer( $entry['date'], $stored_ts ) ) {
+					$errors[] = $provider_id . ': backup_not_newer';
+					continue;
+				}
+				$via_backup = true;
+			}
+			$result = $try;
+			$used   = $provider;
+			break;
+		}
+
+		if ( null === $result ) {
+			$error = implode( ' | ', $errors );
+			update_option( self::ERROR, $error . ' @' . time(), false );
+			One_Navasan_Logger::add( 'error', sprintf( 'Fetch failed, kept last healthy rate (%s).', $error ) );
 			return array( 'ok' => false, 'status' => 'failed', 'message' => __( 'دریافت نرخ ناموفق بود؛ آخرین نرخ سالم حفظ شد.', ONE_NAVASAN_DOMAIN ) );
 		}
 
-		$new_entry = $result['data'][ $symbol ];
-		$old_raw   = self::raw_entry();
-		$old_value = $old_raw ? $old_raw['value'] : null;
-		$jump      = One_Navasan_Guard::check_jump( $new_entry['value'], $old_value, (float) One_Navasan_Settings::get( 'max_jump_pct' ) );
+		$base           = $used->base_symbol( $s );
+		$new_entry      = $result['symbols'][ $base ];
+		$old_raw        = self::raw_entry();
+		$old_value      = $old_raw ? $old_raw['value'] : null;
+		$source_changed = One_Navasan_Source_Selector::is_source_change( self::stored_provider(), $used->id() );
+		$jump           = One_Navasan_Guard::check_jump( $new_entry['value'], $old_value, (float) $s['max_jump_pct'] );
 		if ( ! $jump['ok'] ) {
+			$reason = One_Navasan_Source_Selector::hold_reason( $source_changed );
 			update_option(
 				self::PENDING,
 				array(
-					'symbols'    => $result['data'],
-					'fetched_at' => time(),
-					'source'     => $result['source'],
-					'new_value'  => $new_entry['value'],
-					'old_value'  => $old_value,
-					'pct'        => $jump['pct'],
+					'symbols'     => $result['symbols'],
+					'fetched_at'  => time(),
+					'source'      => $result['endpoint'],
+					'provider'    => $used->id(),
+					'via_backup'  => $via_backup,
+					'base_symbol' => $base,
+					'reason'      => $reason,
+					'new_value'   => $new_entry['value'],
+					'old_value'   => $old_value,
+					'pct'         => $jump['pct'],
 				),
 				false
 			);
-			One_Navasan_Logger::add( 'warning', sprintf( 'Rate jump %.2f%% exceeds the limit; waiting for admin approval.', $jump['pct'] ) );
+			One_Navasan_Logger::add( 'warning', sprintf( 'Rate jump %.2f%% exceeds the limit (%s, from %s); waiting for admin approval.', $jump['pct'], $reason, $used->id() ) );
 			return array( 'ok' => false, 'status' => 'pending', 'message' => __( 'تغییر نرخ از حد مجاز بیشتر بود و منتظر تأیید مدیر است.', ONE_NAVASAN_DOMAIN ) );
 		}
 
-		self::commit( $result['data'], $result['source'] );
-		One_Navasan_Logger::add( 'info', sprintf( 'Rate updated from %s.', $result['source'] ) );
+		self::commit( $result['symbols'], $result['endpoint'], $used->id(), $via_backup, $base );
+		One_Navasan_Logger::add( $via_backup ? 'warning' : 'info', sprintf( 'Rate updated from %s/%s%s.', $used->id(), $result['endpoint'], $via_backup ? ' (backup source)' : '' ) );
 		return array( 'ok' => true, 'status' => 'updated', 'message' => __( 'نرخ با موفقیت به‌روز شد.', ONE_NAVASAN_DOMAIN ) );
 	}
 
@@ -203,7 +306,9 @@ class One_Navasan_Rate_Service {
 		if ( ! $p ) {
 			return false;
 		}
-		self::commit( $p['symbols'], $p['source'] );
+		$provider = ! empty( $p['provider'] ) ? (string) $p['provider'] : 'navasan';
+		$base     = ! empty( $p['base_symbol'] ) ? (string) $p['base_symbol'] : One_Navasan_Settings::base_symbol();
+		self::commit( $p['symbols'], $p['source'], $provider, ! empty( $p['via_backup'] ), $base );
 		One_Navasan_Logger::add( 'info', 'Pending rate approved by admin.' );
 		return true;
 	}
@@ -211,10 +316,13 @@ class One_Navasan_Rate_Service {
 	/**
 	 * Store a healthy dataset and fire follow-up work.
 	 *
-	 * @param array  $symbols Normalized symbols map.
-	 * @param string $source  Source id.
+	 * @param array  $symbols    Normalized symbols map.
+	 * @param string $source     Path (endpoint) id.
+	 * @param string $provider   Provider id.
+	 * @param bool   $via_backup Whether the backup source delivered it.
+	 * @param string $base       Base symbol of the data.
 	 */
-	public static function commit( array $symbols, $source ) {
+	public static function commit( array $symbols, $source, $provider = 'navasan', $via_backup = false, $base = '' ) {
 		$old_eff = self::effective_toman();
 		update_option(
 			self::STATE,
@@ -222,7 +330,9 @@ class One_Navasan_Rate_Service {
 				'symbols'     => $symbols,
 				'fetched_at'  => time(),
 				'source'      => $source,
-				'base_symbol' => (string) One_Navasan_Settings::get( 'base_symbol' ),
+				'provider'    => $provider,
+				'via_backup'  => (bool) $via_backup,
+				'base_symbol' => '' !== $base ? $base : One_Navasan_Settings::base_symbol(),
 			),
 			false
 		);

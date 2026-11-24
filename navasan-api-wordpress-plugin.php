@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Navasan-API plugin for WordPress
  * Plugin URI:        https://github.com/amirmohagheghiyan/navasan-api-wordpress-plugin
- * Description:       نرخ لحظه‌ای طلا از پروژهٔ متن‌باز Navasan-API، شورت‌کد و REST برای نمایش نرخ، و قیمت‌گذاری خودکار محصولات ووکامرس بر اساس وزن و عیار.
- * Version:           1.0.0
+ * Description:       نرخ لحظه‌ای طلا از priceto.day یا Navasan-API (یا دستی)، شورت‌کد و REST برای نمایش نرخ، و قیمت‌گذاری خودکار محصولات ووکامرس بر اساس وزن و عیار.
+ * Version:           1.1.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            one28
@@ -12,23 +12,23 @@
  * Text Domain:       navasan-api-wordpress-plugin
  * WC requires at least: 7.0
  *
- * Data source: Powered by Navasan-API (https://github.com/HosseinOdd/Navasan-API)
- * by Hossein (HosseinOdd). This plugin only reads the JSON files published in
- * that repository; no code from it is included.
+ * Data sources (the plugin only reads their public API / JSON; no code from them is included):
+ * - priceto.day, https://github.com/margani/pricedb by Hossein Margani (MIT), data from tgju.org.
+ * - Powered by Navasan-API, https://github.com/HosseinOdd/Navasan-API by Hossein (HosseinOdd).
  *
  * @package navasan-api-wordpress-plugin
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'ONE_NAVASAN_VERSION', '1.0.0' );
+define( 'ONE_NAVASAN_VERSION', '1.1.0' );
 define( 'ONE_NAVASAN_FILE', __FILE__ );
 define( 'ONE_NAVASAN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ONE_NAVASAN_URL', plugin_dir_url( __FILE__ ) );
 define( 'ONE_NAVASAN_DOMAIN', 'navasan-api-wordpress-plugin' );
 
 /**
- * Class autoloader: One_Navasan_Foo_Bar => includes/{,core/,woocommerce/}class-one-navasan-foo-bar.php
+ * Class autoloader: One_Navasan_Foo_Bar => includes/{,core/,providers/,woocommerce/}{class,interface}-one-navasan-foo-bar.php
  *
  * @param string $class_name Class name.
  */
@@ -36,11 +36,14 @@ function one_navasan_autoload( $class_name ) {
 	if ( 0 !== strpos( $class_name, 'One_Navasan_' ) ) {
 		return;
 	}
-	$file = 'class-' . strtolower( str_replace( '_', '-', $class_name ) ) . '.php';
-	foreach ( array( 'includes/', 'includes/core/', 'includes/woocommerce/' ) as $dir ) {
-		if ( is_readable( ONE_NAVASAN_DIR . $dir . $file ) ) {
-			require_once ONE_NAVASAN_DIR . $dir . $file;
-			return;
+	$slug = strtolower( str_replace( '_', '-', $class_name ) );
+	foreach ( array( 'includes/', 'includes/core/', 'includes/providers/', 'includes/woocommerce/' ) as $dir ) {
+		foreach ( array( 'class-', 'interface-' ) as $prefix ) {
+			$file = ONE_NAVASAN_DIR . $dir . $prefix . $slug . '.php';
+			if ( is_readable( $file ) ) {
+				require_once $file;
+				return;
+			}
 		}
 	}
 }

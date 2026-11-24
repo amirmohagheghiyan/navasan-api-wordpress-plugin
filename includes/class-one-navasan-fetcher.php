@@ -1,6 +1,6 @@
 <?php
 /**
- * HTTP access to the source.
+ * HTTP access to the providers.
  *
  * @package navasan-api-wordpress-plugin
  */
@@ -8,174 +8,198 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Fetches the JSON from the configured URL and, for the default Navasan-API source only,
- * falls back to GitHub Contents API and jsDelivr (both read the same repository file).
+ * Requests, per-path cooldown and provider fetching. The only hosts contacted are those of the
+ * two providers: api.priceto.day, and for Navasan-API the configured source URL (default
+ * raw.githubusercontent.com), api.github.com and cdn.jsdelivr.net.
  */
 class One_Navasan_Fetcher {
 
-	const CONTENTS_API = 'https://api.github.com/repos/HosseinOdd/Navasan-API/contents/data/gold.json';
-	const JSDELIVR     = 'https://cdn.jsdelivr.net/gh/HosseinOdd/Navasan-API@main/data/gold.json';
+	/**
+	 * Per-request timeout in seconds.
+	 */
+	const TIMEOUT = 6;
 
 	/**
-	 * Build the ordered list of sources.
-	 *
-	 * @return array[] Each: id, label, url, headers, cdn.
+	 * A path that failed with a network error or a 5xx is skipped for this long.
 	 */
-	public static function sources() {
-		$s       = One_Navasan_Settings::all();
-		$key     = (string) $s['api_key'];
-		$url     = (string) $s['source_url'];
-		$headers = array( 'Accept' => 'application/json' );
-		$is_default = ( One_Navasan_Settings::DEFAULT_URL === $url );
+	const COOLDOWN = 1800;
 
-		$bearer = ( '' !== $key && 'bearer' === $s['key_method'] ) ? 'Bearer ' . $key : '';
-		if ( '' !== $key && 'url' === $s['key_method'] ) {
-			$url = str_replace( '{key}', rawurlencode( $key ), $url );
+	/**
+	 * Provider instance by id.
+	 *
+	 * @param string $id priceto|navasan.
+	 * @return One_Navasan_Provider|null
+	 */
+	public static function provider( $id ) {
+		if ( 'priceto' === $id ) {
+			return new One_Navasan_Provider_Priceto();
 		}
-
-		$primary_headers = $headers;
-		if ( $bearer ) {
-			$primary_headers['Authorization'] = $bearer;
+		if ( 'navasan' === $id ) {
+			return new One_Navasan_Provider_Navasan();
 		}
-		$list = array(
-			array(
-				'id'      => 'primary',
-				'label'   => $is_default ? __( 'آدرس اصلی (raw.githubusercontent.com)', ONE_NAVASAN_DOMAIN ) : __( 'آدرس منبع تنظیم‌شده', ONE_NAVASAN_DOMAIN ),
-				'url'     => $url,
-				'headers' => $primary_headers,
-				'cdn'     => false,
-			),
-		);
-		if ( $is_default ) {
-			$api_headers = array( 'Accept' => 'application/vnd.github.raw+json' );
-			if ( $bearer ) {
-				// The key is a GitHub token here; it is only ever sent to GitHub hosts.
-				$api_headers['Authorization'] = $bearer;
-			}
-			$list[] = array(
-				'id'      => 'contents_api',
-				'label'   => __( 'GitHub Contents API', ONE_NAVASAN_DOMAIN ),
-				'url'     => self::CONTENTS_API,
-				'headers' => $api_headers,
-				'cdn'     => false,
-			);
-			$list[] = array(
-				'id'      => 'jsdelivr',
-				'label'   => __( 'jsDelivr (کش چندساعته)', ONE_NAVASAN_DOMAIN ),
-				'url'     => self::JSDELIVR,
-				'headers' => $headers,
-				'cdn'     => true,
-			);
-		}
-		return $list;
+		return null;
 	}
 
 	/**
-	 * Perform one request.
+	 * User agent with plugin name and version.
 	 *
-	 * @param array $source Source definition.
+	 * @return string
+	 */
+	public static function user_agent() {
+		return 'One-Navasan-WordPress/' . ONE_NAVASAN_VERSION . ' (+https://github.com/amirmohagheghiyan/navasan-api-wordpress-plugin)';
+	}
+
+	/**
+	 * Transient key of an endpoint's cooldown.
+	 *
+	 * @param array $endpoint Endpoint.
+	 * @return string
+	 */
+	private static function cooldown_key( array $endpoint ) {
+		return 'one_navasan_cd_' . md5( $endpoint['url'] );
+	}
+
+	/**
+	 * Is the endpoint cooling down after a recent failure?
+	 *
+	 * @param array $endpoint Endpoint.
+	 * @return bool
+	 */
+	public static function is_cooling_down( array $endpoint ) {
+		return false !== get_transient( self::cooldown_key( $endpoint ) );
+	}
+
+	/**
+	 * Perform one request (updates the endpoint's cooldown).
+	 *
+	 * @param array $endpoint Endpoint definition (url, headers).
 	 * @return array {ok, http, ms, error, body}
 	 */
-	public static function request( array $source ) {
+	public static function request( array $endpoint ) {
 		$start    = microtime( true );
 		$response = wp_remote_get(
-			$source['url'],
+			$endpoint['url'],
 			array(
-				'timeout'             => 10,
+				'timeout'             => self::TIMEOUT,
 				'redirection'         => 3,
-				'user-agent'          => 'One-Navasan-WordPress/' . ONE_NAVASAN_VERSION,
-				'headers'             => $source['headers'],
+				'user-agent'          => self::user_agent(),
+				'headers'             => isset( $endpoint['headers'] ) ? $endpoint['headers'] : array(),
 				'limit_response_size' => 2 * MB_IN_BYTES,
 			)
 		);
-		$ms = (int) round( ( microtime( true ) - $start ) * 1000 );
+		$ms  = (int) round( ( microtime( true ) - $start ) * 1000 );
+		$key = self::cooldown_key( $endpoint );
 		if ( is_wp_error( $response ) ) {
+			set_transient( $key, 1, self::COOLDOWN );
 			return array( 'ok' => false, 'http' => 0, 'ms' => $ms, 'error' => One_Navasan_Logger::redact( $response->get_error_message() ), 'body' => '' );
 		}
 		$code = (int) wp_remote_retrieve_response_code( $response );
 		if ( 200 !== $code ) {
+			if ( $code >= 500 || 429 === $code ) {
+				set_transient( $key, 1, self::COOLDOWN );
+			}
 			return array( 'ok' => false, 'http' => $code, 'ms' => $ms, 'error' => 'HTTP ' . $code, 'body' => '' );
 		}
+		delete_transient( $key );
 		return array( 'ok' => true, 'http' => $code, 'ms' => $ms, 'error' => '', 'body' => (string) wp_remote_retrieve_body( $response ) );
 	}
 
 	/**
-	 * Fetch + validate one source for the base symbol.
+	 * Fetch + validate one endpoint.
 	 *
-	 * @param array  $source Source.
-	 * @param string $symbol Base symbol.
-	 * @return array {ok, http, ms, error, data, entry}
+	 * @param One_Navasan_Provider $provider Provider.
+	 * @param array                $endpoint Endpoint.
+	 * @param array                $settings Settings.
+	 * @return array {ok, http, ms, error, symbols, entry}
 	 */
-	public static function fetch_source( array $source, $symbol ) {
-		$r = self::request( $source );
-		$r['data']  = array();
-		$r['entry'] = null;
+	public static function fetch_endpoint( One_Navasan_Provider $provider, array $endpoint, array $settings ) {
+		$r            = self::request( $endpoint );
+		$r['symbols'] = array();
+		$r['entry']   = null;
 		if ( ! $r['ok'] ) {
 			return $r;
 		}
-		$parsed = One_Navasan_Source_Validator::parse_json( $r['body'] );
+		$parsed = $provider->parse( $endpoint, $r['body'], $settings );
+		unset( $r['body'] );
 		if ( ! $parsed['ok'] ) {
 			$r['ok']    = false;
 			$r['error'] = $parsed['error'];
 			return $r;
 		}
-		$entry = One_Navasan_Source_Validator::get_entry( $parsed['data'], $symbol );
-		if ( ! $entry['ok'] ) {
-			$r['ok']    = false;
-			$r['error'] = $entry['error'] . ' (' . $symbol . ')';
-			return $r;
-		}
-		$r['data']  = $parsed['data'];
-		$r['entry'] = $entry['entry'];
-		unset( $r['body'] );
+		$r['symbols'] = $parsed['symbols'];
+		$r['entry']   = $parsed['symbols'][ $provider->base_symbol( $settings ) ];
 		return $r;
 	}
 
 	/**
-	 * Fetch from the first source that works.
+	 * Fetch from the first working endpoint of a provider.
 	 *
-	 * @param string   $symbol         Base symbol.
-	 * @param int|null $stored_data_ts Data timestamp of the stored rate (to reject older CDN copies).
-	 * @return array {ok, data, source, error, attempts[]}
+	 * Endpoints in cooldown are skipped, unless every endpoint is in cooldown (then all are tried).
+	 *
+	 * @param One_Navasan_Provider $provider  Provider.
+	 * @param int|null             $stored_ts Data time of the stored rate (rejects older CDN copies).
+	 * @return array {ok, symbols, endpoint, error, attempts[]}
 	 */
-	public static function fetch( $symbol, $stored_data_ts = null ) {
+	public static function fetch_provider( One_Navasan_Provider $provider, $stored_ts = null ) {
+		$settings  = One_Navasan_Settings::all();
+		$endpoints = $provider->endpoints( $settings );
+		$ready     = array_values( array_filter( $endpoints, function ( $e ) {
+			return ! self::is_cooling_down( $e );
+		} ) );
+		if ( ! $ready ) {
+			$ready = $endpoints;
+		}
 		$attempts = array();
 		$last     = '';
-		foreach ( self::sources() as $source ) {
-			$r = self::fetch_source( $source, $symbol );
-			if ( $r['ok'] && $source['cdn'] && null !== $stored_data_ts && null !== $r['entry']['date'] && $r['entry']['date'] < (int) $stored_data_ts ) {
+		foreach ( $endpoints as $endpoint ) {
+			if ( ! in_array( $endpoint, $ready, true ) ) {
+				$attempts[] = array( 'id' => $endpoint['id'], 'label' => $endpoint['label'], 'ok' => false, 'http' => 0, 'error' => 'cooldown' );
+				continue;
+			}
+			$r = self::fetch_endpoint( $provider, $endpoint, $settings );
+			if ( $r['ok'] && ! empty( $endpoint['cdn'] ) && null !== $stored_ts && null !== $r['entry']['date'] && $r['entry']['date'] < (int) $stored_ts ) {
 				$r['ok']    = false;
 				$r['error'] = 'older_than_stored';
 			}
-			$attempts[] = array( 'id' => $source['id'], 'label' => $source['label'], 'ok' => $r['ok'], 'http' => $r['http'], 'error' => $r['error'] );
+			$attempts[] = array( 'id' => $endpoint['id'], 'label' => $endpoint['label'], 'ok' => $r['ok'], 'http' => $r['http'], 'error' => $r['error'] );
 			if ( $r['ok'] ) {
-				return array( 'ok' => true, 'data' => $r['data'], 'source' => $source['id'], 'error' => '', 'attempts' => $attempts );
+				return array(
+					'ok'       => true,
+					'symbols'  => $provider->supplement( $r['symbols'], $settings ),
+					'endpoint' => $endpoint['id'],
+					'error'    => '',
+					'attempts' => $attempts,
+				);
 			}
-			$last = $source['id'] . ': ' . $r['error'];
+			$last = $provider->id() . '/' . $endpoint['id'] . ': ' . $r['error'];
 		}
-		return array( 'ok' => false, 'data' => array(), 'source' => '', 'error' => $last, 'attempts' => $attempts );
+		return array( 'ok' => false, 'symbols' => array(), 'endpoint' => '', 'error' => $last, 'attempts' => $attempts );
 	}
 
 	/**
-	 * Test every source separately (for the settings page).
+	 * Test every endpoint of both providers separately (for the settings page). Ignores cooldowns.
 	 *
 	 * @return array[]
 	 */
 	public static function test_all() {
-		$symbol = (string) One_Navasan_Settings::get( 'base_symbol' );
-		$rows   = array();
-		foreach ( self::sources() as $source ) {
-			$r      = self::fetch_source( $source, $symbol );
-			$rows[] = array(
-				'label' => $source['label'],
-				'url'   => One_Navasan_Logger::redact( self::display_url( $source['url'] ) ),
-				'ok'    => $r['ok'],
-				'http'  => $r['http'],
-				'ms'    => $r['ms'],
-				'error' => $r['error'],
-				'value' => $r['ok'] ? $r['entry']['value'] : null,
-				'date'  => $r['ok'] ? $r['entry']['date'] : null,
-			);
+		$settings = One_Navasan_Settings::all();
+		$rows     = array();
+		foreach ( array( 'priceto', 'navasan' ) as $id ) {
+			$provider = self::provider( $id );
+			foreach ( $provider->endpoints( $settings ) as $endpoint ) {
+				$r      = self::fetch_endpoint( $provider, $endpoint, $settings );
+				$rows[] = array(
+					'provider' => $provider->label(),
+					'label'    => $endpoint['label'],
+					'url'      => One_Navasan_Logger::redact( self::display_url( $endpoint['url'] ) ),
+					'ok'       => $r['ok'],
+					'http'     => $r['http'],
+					'ms'       => $r['ms'],
+					'error'    => $r['error'],
+					'value'    => $r['ok'] ? $r['entry']['value'] : null,
+					'date'     => $r['ok'] ? $r['entry']['date'] : null,
+				);
+			}
 		}
 		return $rows;
 	}

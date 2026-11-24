@@ -66,6 +66,7 @@ class One_Navasan_Rest {
 			'symbol'     => $out['symbol'],
 			'unit'       => $unit,
 			'mode'       => $out['mode'],
+			'source'     => $out['source'],
 			'value'      => $scale( $out['value'] ),
 			'change_val' => $scale( $out['change_val'] ),
 			'change_pct' => $out['change_pct'],
